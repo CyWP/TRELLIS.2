@@ -1,11 +1,16 @@
 import os
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"  # Can save GPU memory
+
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = (
+    "expandable_segments:True"  # Can save GPU memory
+)
 import trimesh
 from PIL import Image
 from trellis2.pipelines import Trellis2TexturingPipeline
 
 # 1. Load Pipeline
-pipeline = Trellis2TexturingPipeline.from_pretrained("microsoft/TRELLIS.2-4B", config_file="texturing_pipeline.json")
+pipeline = Trellis2TexturingPipeline.from_pretrained(
+    "microsoft/TRELLIS.2-4B", config_file="texturing_pipeline.json"
+)
 pipeline.cuda()
 
 # 2. Load Mesh, image & Run

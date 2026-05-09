@@ -1,6 +1,7 @@
 from typing import *
 import torch
 import torch.nn as nn
+from contextlib import contextmanager
 from .. import models
 
 
@@ -52,6 +53,21 @@ class Pipeline:
         new_pipeline = cls(_models)
         new_pipeline._pretrained_args = args
         return new_pipeline
+
+    @contextmanager
+    def get_model(self, name: str):
+        model = self.models.get(name, None)
+        if model is None:
+            raise ValueError(
+                f"'{name}' is not a valid model name. Models: {self.models.keys()}"
+            )
+        try:
+            if self.low_vram:
+                model.to(self.device)
+            yield model
+        finally:
+            if self.low_vram:
+                model.cpu()
 
     @property
     def device(self) -> torch.device:

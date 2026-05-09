@@ -5,6 +5,31 @@ import torch
 import trimesh
 import o_voxel
 
+from trellis2.utils.vox_utils import vox2mesh
+
+
+def voxidx2vol(idx: torch.Tensor, vox_size: int, vol_size: int) -> torch.Tensor:
+    """
+    Convert sparse voxel indices to a dense boolean volume.
+
+    Args:
+        idx: Voxel indices of shape (N, 3) - each row is [x, y, z]
+        vox_size: Original voxel grid size (e.g., 512)
+        vol_size: Target volume size (e.g., 64)
+
+    Returns:
+        Boolean volume of shape (vol_size, vol_size, vol_size)
+    """
+    ratio = vox_size // vol_size
+    vol_idx = idx // ratio
+    vol_idx = vol_idx.long()
+
+    vol = torch.zeros(
+        (vol_size, vol_size, vol_size), device=idx.device, dtype=torch.bool
+    )
+    vol[vol_idx[:, 0], vol_idx[:, 1], vol_idx[:, 2]] = True
+    return vol
+
 
 def main():
     resolution = 512
@@ -49,7 +74,8 @@ def main():
     print(f"  Intersected shape: {intersected.shape}")
     print(f"  Occupied voxels: {len(voxel_indices)}")
 
-    breakpoint()
+    occ = voxidx2vol(voxel_indices, resolution, 64)
+    vox2mesh(occ, save_path="vox2mesh_test_armor.glb")
 
 
 if __name__ == "__main__":
