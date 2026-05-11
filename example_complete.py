@@ -16,8 +16,5 @@ pipeline.cuda()
 
 # 2. Load Mesh, image & Run
 mesh = trimesh.load("/home/cyvv/share/3D/Models/r2dhorse.glb")
-image = Image.open("/home/cyvv/share/3D/Models/r2dhorse_render_base.png")
+image = Image.open("/home/cyvv/share/3D/Models/r2dhorse_render_inpainted.png")
 output = pipeline.run(mesh, image)
-
-# 3. Render Mesh
-# output.export("textured.glb", extension_webp=True)

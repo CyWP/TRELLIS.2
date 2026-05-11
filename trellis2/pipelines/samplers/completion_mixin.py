@@ -1,3 +1,8 @@
+import torch
+
+from torch import Tensor
+
+
 class CompletionSamplerMixin:
     """
     A mixin class that forces constrained regions to fit a target.
