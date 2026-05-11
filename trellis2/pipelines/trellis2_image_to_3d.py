@@ -639,6 +639,13 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         coords = self.sample_sparse_structure(
             cond_512, ss_res, num_samples, sparse_structure_sampler_params
         )  # I think it's [num_voxels, 4], got [3173, 4]
+        from trellis2.utils.vox_utils import vox2mesh, voxidx2vol
+
+        vox2mesh(
+            voxidx2vol(coords[:, 1:], 64, 64, permute=False),
+            save_path="generative_reference.glb",
+        )
+        return
         if pipeline_type == "512":
             shape_slat = self.sample_shape_slat(
                 cond_512,

@@ -1,10 +1,12 @@
 import torch
 import trimesh
 import numpy as np
-from typing import Union, List
+from typing import Union, List, Literal
 
 
-def voxidx2vol(idx: torch.Tensor, vox_size: int, vol_size: int) -> torch.Tensor:
+def voxidx2vol(
+    idx: torch.Tensor, vox_size: int, vol_size: int, permute: bool = True
+) -> torch.Tensor:
     """
     Convert sparse voxel indices to a dense boolean volume.
 
@@ -17,13 +19,16 @@ def voxidx2vol(idx: torch.Tensor, vox_size: int, vol_size: int) -> torch.Tensor:
         Boolean volume of shape (vol_size, vol_size, vol_size)
     """
     ratio = vox_size // vol_size
-    vol_idx = idx // ratio
+    vol_idx = idx // ratio if ratio != 1 else idx
     vol_idx = vol_idx.long()
 
     vol = torch.zeros(
         (vol_size, vol_size, vol_size), device=idx.device, dtype=torch.bool
     )
-    vol[vol_idx[:, 2], vol_idx[:, 0], vol_idx[:, 1]] = True
+    # if permute:
+    #     vol[vol_idx[:, 2], vol_idx[:, 0], vol_idx[:, 1]] = True
+    # else:
+    vol[vol_idx[:, 0], vol_idx[:, 1], vol_idx[:, 2]] = True
     return vol
 
 

@@ -151,7 +151,7 @@ class Trellis2ModelCompletionPipeline(Pipeline):
             if self.rembg_model is not None:
                 self.rembg_model.to(device)
 
-    def get_slat_models(pipeline_type: str) -> Tuple[str, str]:
+    def get_slat_models(self, pipeline_type: str) -> Tuple[str, str]:
         if pipeline_type == "512":
             return "shape_slat_flow_model_512", "tex_slat_flow_model_512"
         elif pipeline_type == "1024":
@@ -260,20 +260,18 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         # Encode target and get mask
         vox2mesh(target > 0, save_path="voxel_presampled_test.glb")
         with self.get_model("sparse_structure_encoder") as ss_enc:
-            enc_target = ss_enc(target[None, None])  # [1, 8, 16, 16, 16]
+            enc_target = ss_enc(target[None, None] * 2 - 1)  # [1, 8, 16, 16, 16]
         enc_target_mask = torch.nn.functional.max_pool3d(
             target[None, None], 4, 4, 0
         ).repeat(1, 8, 1, 1, 1)
-        # self.sparse_structure_sampler.set_target(enc_target, enc_target_mask)
-        self.sparse_structure_sampler.set_target(None, None)
+        self.sparse_structure_sampler.set_target(enc_target, enc_target_mask)
+        # self.sparse_structure_sampler.set_target(None, None)
         # Sample sparse structure latent
         # SparseStructureFlowModel
         with self.get_model("sparse_structure_flow_model") as ss_flow:
             reso = ss_flow.resolution
             in_channels = ss_flow.in_channels
-            noise = torch.randn(num_samples, in_channels, reso, reso, reso).to(
-                self.device
-            )
+            noise = torch.randn_like(enc_target)
             sampler_params = {**self.sparse_structure_sampler_params, **sampler_params}
             # FlowEulerGuidanceIntervalSample
             z_s = self.sparse_structure_sampler.sample(
@@ -290,6 +288,9 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         with self.get_model("sparse_structure_decoder") as ss_dec:
             decoded = ss_dec(z_s) > 0  # [1, 1, 64, 64, 64]
             # For testing voxel export
+            vox2mesh(
+                ss_dec(enc_target).squeeze(1), save_path="encdecvoxtest.glb"
+            )  # same, confirms no permutation in enc dec
             vox2mesh(decoded.squeeze(1), save_path="voxel_sampled_test.glb")
         if resolution != decoded.shape[2]:
             ratio = decoded.shape[2] // resolution
@@ -318,6 +319,7 @@ class Trellis2ModelCompletionPipeline(Pipeline):
             coords (torch.Tensor): The coordinates of the sparse structure.
             sampler_params (dict): Additional parameters for the sampler.
         """
+        self.shape_slat_sampler.set_target(target)
         # Sample structured latent
         noise = SparseTensor(
             feats=torch.randn(coords.shape[0], flow_model.in_channels).to(self.device),
@@ -477,7 +479,14 @@ class Trellis2ModelCompletionPipeline(Pipeline):
                 [torch.zeros_like(vox_idx_tex[:, 0:1]), vox_idx_tex], dim=-1
             ),
         ).to(self.device)
-
+        with self.get_model("shape_slat_encoder") as shape_enc:
+            shape_slat_target = shape_enc(o_vox_shape, intersected)
+        ss_target = (
+            voxidx2vol(shape_slat_target.coords[:, 1:], ss_res, ss_res)
+            .to(torch.float32)
+            .permute(2, 0, 1)
+        )
+        breakpoint()
         # These two represent the same volume, but must both be preserved due to different ordering
         vox_idx_shape = vox_idx_shape.to(self.device)
         vox_idx_tex = vox_idx_tex.to(self.device)
@@ -486,24 +495,26 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         cond = self.get_cond(image=[image], resolution=o_vox_res)
 
         # Extract sparse structure constraint from o-voxel
-        ss_target = voxidx2vol(vox_idx_shape, o_vox_res, ss_res).to(torch.float32)
-        # vox2mesh(ss_target, save_path="voxel_convert_test.glb")
+        # ss_target = voxidx2vol(vox_idx_shape, o_vox_res, ss_res).to(torch.float32)
+        vox2mesh(ss_target, save_path="voxel_convert_test.glb")
         coords = self.sample_sparse_structure(ss_target, cond, ss_res)
-
+        vox2mesh(
+            voxidx2vol(coords[:, 1:], 64, 64, permute=False),
+            save_path="voxel_postsample.glb",
+        )
+        breakpoint()
         # Get flow model names
         shape_flow_name, tex_flow_name = self.get_slat_models(pipeline_type)
 
         # Sample constrained shape slat
-        with self.get_model("shape_slat_encoder") as shape_enc:
-            shape_slat_target = shape_enc(o_vox_shape, intersected)
-            with self.get_model(shape_flow_name) as shape_flow:
-                shape_slat = self.sample_shape_slat(
-                    shape_slat_target,
-                    cond,
-                    shape_flow,
-                    coords,
-                    shape_slat_sampler_params,
-                )
+        with self.get_model(shape_flow_name) as shape_flow:
+            shape_slat = self.sample_shape_slat(
+                shape_slat_target,
+                cond,
+                shape_flow,
+                coords,
+                shape_slat_sampler_params,
+            )
 
         # Sample constrained tex slat
         with self.get_model("tex_slat_encoder") as tex_enc:
