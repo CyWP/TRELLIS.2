@@ -469,6 +469,7 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         mean = torch.tensor(self.shape_slat_normalization["mean"])[None].to(
             shape_slat.device
         )
+        breakpoint()
         shape_slat = (shape_slat - mean) / std
 
         in_channels = (
@@ -642,10 +643,9 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         from trellis2.utils.vox_utils import vox2mesh, voxidx2vol
 
         vox2mesh(
-            voxidx2vol(coords[:, 1:], 64, 64, permute=False),
+            voxidx2vol(coords[:, 1:], 64, 64),
             save_path="generative_reference.glb",
         )
-        return
         if pipeline_type == "512":
             shape_slat = self.sample_shape_slat(
                 cond_512,

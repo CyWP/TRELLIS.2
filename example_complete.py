@@ -6,6 +6,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = (
 import trimesh
 from PIL import Image
 from trellis2.pipelines.trellis2_model_completion import Trellis2ModelCompletionPipeline
+import o_voxel
 
 # 1. Load Pipeline
 pipeline = Trellis2ModelCompletionPipeline.from_pretrained(
@@ -22,4 +23,23 @@ inpaint_region = trimesh.load(
 image = Image.open(
     "/home/cyvv/share/Research/trellis-modeller/r2dhorse_render_inpainted.png"
 )
-output = pipeline.run(mesh, image, inpaint_region)
+mesh = pipeline.run(mesh, image, inpaint_region)[0]
+
+print("Export to GLB")
+# 5. Export to GLB
+glb = o_voxel.postprocess.to_glb(
+    vertices=mesh.vertices,
+    faces=mesh.faces,
+    attr_volume=mesh.attrs,
+    coords=mesh.coords,
+    attr_layout=mesh.layout,
+    voxel_size=mesh.voxel_size,
+    aabb=[[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
+    decimation_target=1000000,
+    texture_size=4096,
+    remesh=True,
+    remesh_band=1,
+    remesh_project=0,
+    verbose=True,
+)
+glb.export("sample_inpaint.glb", extension_webp=True)
