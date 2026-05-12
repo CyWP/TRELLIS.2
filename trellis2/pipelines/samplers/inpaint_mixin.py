@@ -5,29 +5,44 @@ from torch import Tensor
 from typing import Union, Optional, Any
 from tqdm import tqdm
 
-from ...modules.sparse.basic import SparseTensor
+from ...modules.sparse.basic import (
+    SparseTensor,
+    sparse_cat,
+)
 
 
 class InpaintSamplerMixin:
     """
-    Soft-constrained inpainting for both dense Tensor and SparseTensor.
+    Sparse/dense inpainting mixin for flow matching samplers.
+
+    Semantics:
+        region == 1  -> FREE / inpainting region
+        region == 0  -> constrained to target
 
     Dense:
-        x <- (1 - m) * x + m * target
+        x = region * sample + (1-region) * target
 
     Sparse:
-        same update, but only on overlapping coordinates.
+        region sparse coords define FREE voxels.
+        All other target voxels are constrained.
 
-    IMPORTANT:
-    Sparse coordinate correspondences are computed ONCE and cached.
+    Sparse implementation therefore constructs:
+
+        constrained_target
+            UNION
+        evolving_free_sample
+
+    every iteration.
     """
 
     # ============================================================
-    # Setup
+    # API
     # ============================================================
 
     def set_target(
-        self, target: Union[Tensor, SparseTensor], region: Union[Tensor, SparseTensor]
+        self,
+        target: Union[Tensor, SparseTensor],
+        region: Union[Tensor, SparseTensor],
     ):
         self.inpaint_target = target
         self.inpaint_region = region
@@ -35,29 +50,20 @@ class InpaintSamplerMixin:
         self._inpaint_cache = None
 
     # ============================================================
-    # Sparse coordinate hashing
+    # Coordinate hashing
     # ============================================================
 
     def _sparse_coord_hash(
         self,
         coords: Tensor,
     ) -> Tensor:
-        """
-        Vectorized integer coordinate hashing.
-
-        Assumes coordinates are in [0, 1023].
-        Supports:
-            [b, x, y, z]
-        """
 
         coords = coords.long()
-
-        ndim = coords.shape[1]
 
         base = 2048
 
         strides = base ** torch.arange(
-            ndim,
+            coords.shape[1],
             device=coords.device,
             dtype=torch.long,
         )
@@ -65,44 +71,69 @@ class InpaintSamplerMixin:
         return (coords * strides[None]).sum(dim=1)
 
     # ============================================================
-    # Sparse overlap cache
+    # Sparse cache construction
     # ============================================================
 
     def _build_sparse_inpaint_cache(
         self,
         sample: SparseTensor,
     ):
-        """
-        Precompute overlapping sparse voxel indices.
 
-        Cache:
-            sample_idx
-            target_idx
-        """
+        target = self.inpaint_target
+        region = self.inpaint_region
+
+        target_hash = self._sparse_coord_hash(target.coords)
+
+        region_hash = self._sparse_coord_hash(region.coords)
 
         sample_hash = self._sparse_coord_hash(sample.coords)
 
-        target_hash = self._sparse_coord_hash(self.inpaint_target.coords)
+        # ========================================================
+        # FREE REGION
+        # sample ∩ region
+        # ========================================================
 
-        sorted_target_hash, perm = torch.sort(target_hash)
+        sorted_region_hash, _ = torch.sort(region_hash)
 
         pos = torch.searchsorted(
-            sorted_target_hash,
+            sorted_region_hash,
             sample_hash,
         )
 
-        valid = (pos < len(sorted_target_hash)) & (
-            sorted_target_hash[pos.clamp(max=len(sorted_target_hash) - 1)]
+        inside_region = (pos < len(sorted_region_hash)) & (
+            sorted_region_hash[pos.clamp(max=len(sorted_region_hash) - 1)]
             == sample_hash
         )
 
-        sample_idx = valid.nonzero().squeeze(1)
+        free_sample_idx = inside_region.nonzero().squeeze(1)
 
-        target_idx = perm[pos[valid]]
+        # ========================================================
+        # FIXED TARGET
+        # target \ region
+        # ========================================================
 
+        pos2 = torch.searchsorted(
+            sorted_region_hash,
+            target_hash,
+        )
+
+        target_inside_region = (pos2 < len(sorted_region_hash)) & (
+            sorted_region_hash[pos2.clamp(max=len(sorted_region_hash) - 1)]
+            == target_hash
+        )
+
+        constrained_target_idx = (~target_inside_region).nonzero().squeeze(1)
+
+        fixed_target = target.replace(
+            target.feats[constrained_target_idx],
+            target.coords[constrained_target_idx],
+        )
+        breakpoint()
         self._inpaint_cache = {
-            "sample_idx": sample_idx,
-            "target_idx": target_idx,
+            # evolving free subset
+            "free_sample_idx": free_sample_idx,
+            # static constrained subset
+            "fixed_target": fixed_target,
         }
 
     # ============================================================
@@ -114,9 +145,9 @@ class InpaintSamplerMixin:
         x: Tensor,
     ) -> Tensor:
 
-        m = self.inpaint_region
-
-        return (1.0 - m) * x + m * self.inpaint_target
+        return (
+            self.inpaint_region * x + (1.0 - self.inpaint_region) * self.inpaint_target
+        )
 
     # ============================================================
     # Sparse projection
@@ -130,22 +161,43 @@ class InpaintSamplerMixin:
         if self._inpaint_cache is None:
             self._build_sparse_inpaint_cache(x)
 
-        sample_idx = self._inpaint_cache["sample_idx"]
-        target_idx = self._inpaint_cache["target_idx"]
+        cache = self._inpaint_cache
 
-        if len(sample_idx) == 0:
-            return x
+        # --------------------------------------------------------
+        # Dynamic free region from evolving sample
+        # --------------------------------------------------------
 
-        new_feats = x.feats.clone()
+        free_sample = x.replace(
+            x.feats[cache["free_sample_idx"]],
+            x.coords[cache["free_sample_idx"]],
+        )
 
-        target_feats = self.inpaint_target.feats[target_idx]
-        mask_feats = self.inpaint_region.feats[target_idx]
+        fixed_target = cache["fixed_target"]
 
-        new_feats[sample_idx] = (1.0 - mask_feats) * new_feats[
-            sample_idx
-        ] + mask_feats * target_feats
+        # --------------------------------------------------------
+        # Direct concatenation
+        # --------------------------------------------------------
 
-        return x.replace(new_feats)
+        feats = torch.cat(
+            [
+                fixed_target.feats,
+                free_sample.feats,
+            ],
+            dim=0,
+        )
+
+        coords = torch.cat(
+            [
+                fixed_target.coords,
+                free_sample.coords,
+            ],
+            dim=0,
+        )
+
+        return SparseTensor(
+            feats=feats,
+            coords=coords,
+        )
 
     # ============================================================
     # Generic projection
@@ -153,7 +205,7 @@ class InpaintSamplerMixin:
 
     def _apply_inpaint(
         self,
-        x: Union[Tensor, SparseTensor],
+        x,
     ):
 
         if self.inpaint_target is None:
@@ -182,11 +234,6 @@ class InpaintSamplerMixin:
         guidance_interval,
         **kwargs,
     ):
-        """
-        IMPORTANT:
-        Never modify the velocity field directly.
-        """
-
         return super()._inference_model(
             model,
             x_t,
@@ -213,9 +260,6 @@ class InpaintSamplerMixin:
         tqdm_desc: str = "Sampling",
         **kwargs,
     ):
-        """
-        Euler flow sampling with soft inpainting constraints.
-        """
 
         sample = noise
 
@@ -229,6 +273,12 @@ class InpaintSamplerMixin:
             and self._inpaint_cache is None
         ):
             self._build_sparse_inpaint_cache(sample)
+
+        # --------------------------------------------------------
+        # Initial projection
+        # --------------------------------------------------------
+
+        sample = self._apply_inpaint(sample)
 
         # --------------------------------------------------------
         # Time schedule
@@ -254,7 +304,7 @@ class InpaintSamplerMixin:
         )
 
         # --------------------------------------------------------
-        # Euler integration
+        # Sampling loop
         # --------------------------------------------------------
 
         for t, t_prev in tqdm(
@@ -264,7 +314,7 @@ class InpaintSamplerMixin:
         ):
 
             # ----------------------------------------------------
-            # Predict velocity
+            # Model prediction
             # ----------------------------------------------------
 
             v = self._inference_model(
@@ -282,7 +332,7 @@ class InpaintSamplerMixin:
             sample = sample - (t - t_prev) * v
 
             # ----------------------------------------------------
-            # Soft state-space projection
+            # Re-apply hard boundary condition
             # ----------------------------------------------------
 
             sample = self._apply_inpaint(sample)

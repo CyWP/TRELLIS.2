@@ -305,7 +305,8 @@ class Trellis2ModelCompletionPipeline(Pipeline):
             ratio = decoded.shape[2] // resolution
             decoded = (
                 torch.nn.functional.max_pool3d(decoded.float(), ratio, ratio, 0) > 0.5
-            )  # Essentially just downsampling from 1, 1, 64... to 1, 1, 32... when needed for the next model
+            ).bool()  # Essentially just downsampling from 1, 1, 64... to 1, 1, 32... when needed for the next model
+        return decoded
         coords = torch.argwhere(decoded)[
             :, [0, 2, 3, 4]
         ].int()  # Just extracts voxel coords, ignores second dim (always 1, channel dim)
@@ -577,8 +578,8 @@ class Trellis2ModelCompletionPipeline(Pipeline):
 
         # Extract sparse structure constraint from o-voxel
         # ss_target = voxidx2vol(vox_idx_shape, o_vox_res, ss_res).to(torch.float32)
-        coords = self.sample_sparse_structure(ss_target, ss_inpaint, cond, ss_res)
-
+        ss = self.sample_sparse_structure(ss_target, ss_inpaint, cond, ss_res)
+        ss_coords = torch.argwhere(ss)[:, [0, 2, 3, 4]].int()
         # Get flow model names
         shape_flow_name, tex_flow_name = self.get_slat_models(pipeline_type)
 
@@ -590,6 +591,7 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         #     align_corners=False,
         # )
         # [N, 5] : [b, c, z, y, x]
+        breakpoint()
         region_coords_full = torch.argwhere(~ss_inpaint).int()
         # sparse coords: [b, z, y, x]
         region_coords = region_coords_full[:, [0, 2, 3, 4]]
@@ -617,7 +619,7 @@ class Trellis2ModelCompletionPipeline(Pipeline):
                 sparse_region,
                 cond,
                 shape_flow,
-                coords,
+                ss_coords,
                 shape_slat_sampler_params,
             )
 
