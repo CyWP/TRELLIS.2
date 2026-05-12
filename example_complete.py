@@ -15,6 +15,11 @@ pipeline = Trellis2ModelCompletionPipeline.from_pretrained(
 pipeline.cuda()
 
 # 2. Load Mesh, image & Run
-mesh = trimesh.load("/home/cyvv/share/3D/Models/r2dhorse.glb")
-image = Image.open("/home/cyvv/share/3D/Models/r2dhorse_render_inpainted.png")
-output = pipeline.run(mesh, image)
+mesh = trimesh.load("/home/cyvv/share/Research/trellis-modeller/r2dhorse.glb")
+inpaint_region = trimesh.load(
+    "/home/cyvv/share/Research/trellis-modeller/r2dhorse_inpaint_region.glb"
+)
+image = Image.open(
+    "/home/cyvv/share/Research/trellis-modeller/r2dhorse_render_inpainted.png"
+)
+output = pipeline.run(mesh, image, inpaint_region)

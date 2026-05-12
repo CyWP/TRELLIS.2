@@ -1,12 +1,162 @@
 import torch
+import torch.nn.functional as F
 import trimesh
 import numpy as np
 from typing import Union, List, Literal
 
 
-def voxidx2vol(
-    idx: torch.Tensor, vox_size: int, vol_size: int, permute: bool = True
+def resample_volume(
+    volume: torch.Tensor, resolution, mode: str = "trilinear", threshold: float = 0.1
 ) -> torch.Tensor:
+    """
+    Resample volumetric tensors of shape (B, C, H, W, D).
+
+    Args:
+        volume:
+            Tensor of shape (B, C, H, W, D)
+
+        resolution:
+            Either:
+                int -> isotropic output size
+                tuple/list -> (H, W, D)
+
+        mode:
+            "nearest"
+            "trilinear"
+
+    Returns:
+        Tensor of shape (B, C, H_new, W_new, D_new)
+    """
+
+    if volume.ndim != 5:
+        raise ValueError(f"Expected 5D tensor (B,C,H,W,D), got {volume.shape}")
+
+    if isinstance(resolution, int):
+        resolution = (
+            resolution,
+            resolution,
+            resolution,
+        )
+
+    is_bool = volume.dtype == torch.bool
+
+    x = volume.float() if is_bool else volume
+
+    if mode == "nearest":
+        x = F.interpolate(
+            x,
+            size=resolution,
+            mode="nearest",
+        )
+
+    elif mode == "trilinear":
+        x = F.interpolate(
+            x,
+            size=resolution,
+            mode="trilinear",
+            align_corners=False,
+        )
+
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
+
+    if is_bool:
+        x = x > threshold
+
+    return x
+
+
+def mesh_to_voxel_volume(
+    mesh: Union[trimesh.Trimesh, trimesh.Scene],
+    resolution: int,
+    aabb=np.array(
+        [
+            [-0.5, -0.5, -0.5],
+            [0.5, 0.5, 0.5],
+        ],
+        dtype=np.float32,
+    ),
+) -> torch.Tensor:
+    """
+    Create dense solid occupancy voxel grid from mesh.
+
+    Args:
+        mesh:
+            trimesh.Trimesh or trimesh.Scene
+
+        resolution:
+            voxel resolution
+
+        aabb:
+            shape (2,3) bounding box
+
+    Returns:
+        Bool tensor of shape (Z, Y, X)
+    """
+
+    # Merge scene geometry
+    if isinstance(mesh, trimesh.Scene):
+        mesh = trimesh.util.concatenate(
+            [g for g in mesh.dump() if isinstance(g, trimesh.Trimesh)]
+        )
+
+    mesh = mesh.copy()
+
+    aabb = np.asarray(aabb, dtype=np.float32)
+
+    bmin = aabb[0]
+    bmax = aabb[1]
+
+    extent = bmax - bmin
+
+    # voxel size
+    pitch = extent / resolution
+
+    # voxel center coordinates
+    xs = np.linspace(
+        bmin[0] + pitch[0] * 0.5,
+        bmax[0] - pitch[0] * 0.5,
+        resolution,
+    )
+
+    ys = np.linspace(
+        bmin[1] + pitch[1] * 0.5,
+        bmax[1] - pitch[1] * 0.5,
+        resolution,
+    )
+
+    zs = np.linspace(
+        bmin[2] + pitch[2] * 0.5,
+        bmax[2] - pitch[2] * 0.5,
+        resolution,
+    )
+
+    # Create grid of voxel centers
+    xx, yy, zz = np.meshgrid(
+        xs,
+        ys,
+        zs,
+        indexing="ij",
+    )
+
+    points = np.stack(
+        [xx, yy, zz],
+        axis=-1,
+    ).reshape(-1, 3)
+
+    # Solid occupancy test
+    inside = mesh.contains(points)
+
+    volume = inside.reshape(
+        resolution,
+        resolution,
+        resolution,
+    )
+
+    return torch.from_numpy(volume).permute(2, 0, 1)[None, None]
+
+
+def voxidx2vol(idx: torch.Tensor, vox_size: int, vol_size: int) -> torch.Tensor:
     """
     Convert sparse voxel indices to a dense boolean volume.
 

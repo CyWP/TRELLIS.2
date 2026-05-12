@@ -6,7 +6,7 @@ from easydict import EasyDict as edict
 from .base import Sampler
 from .classifier_free_guidance_mixin import ClassifierFreeGuidanceSamplerMixin
 from .guidance_interval_mixin import GuidanceIntervalSamplerMixin
-from .completion_mixin import CompletionSamplerMixin
+from .inpaint_mixin import InpaintSamplerMixin
 
 
 class FlowEulerSampler(Sampler):
@@ -240,7 +240,7 @@ class FlowEulerGuidanceIntervalSampler(
 
 
 class FlowEulerGuidanceIntervalCompletionSampler(
-    CompletionSamplerMixin,
+    InpaintSamplerMixin,
     GuidanceIntervalSamplerMixin,
     ClassifierFreeGuidanceSamplerMixin,
     FlowEulerSampler,
