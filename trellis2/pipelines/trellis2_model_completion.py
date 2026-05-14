@@ -332,7 +332,7 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         mean = torch.tensor(self.shape_slat_normalization["mean"])[None].to(
             target.device
         )
-        target.feats = (target.feats - mean) / std
+        target = (target - mean) / std
         noise = self.shape_slat_sampler.prepare_inpainting(
             target, region, template=ss_coords
         )
@@ -380,17 +380,25 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         mean = torch.tensor(self.shape_slat_normalization["mean"])[None].to(
             shape_slat.device
         )
-        shape_slat.feats = (shape_slat.feats - mean) / std
+        shape_slat = (shape_slat - mean) / std
         std = torch.tensor(self.tex_slat_normalization["std"])[None].to(
             shape_slat.device
         )
         mean = torch.tensor(self.tex_slat_normalization["mean"])[None].to(
             shape_slat.device
         )
-        target.feats = (target.feats - mean) / std
+        target = (target - mean) / std
+
         noise = self.tex_slat_sampler.prepare_inpainting(
-            target, region, template=ss_coords
+            target, region, template=shape_slat.coords
         )
+        # noise = SparseTensor(
+        #     feats=torch.randn(
+        #         (ss_coords.shape[0], target.feats.shape[1]), device=target.device
+        #     ),
+        #     coords=ss_coords,
+        # )
+
         # self.tex_slat_sampler.set_target(None, None)
         sampler_params = {**self.tex_slat_sampler_params, **sampler_params}
         if self.low_vram:

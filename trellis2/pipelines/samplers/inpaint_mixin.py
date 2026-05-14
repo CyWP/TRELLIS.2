@@ -147,9 +147,9 @@ class InpaintSamplerMixin:
             if template is None:
                 raise ValueError("Sparse inpainting requires template coords.")
 
-            template = template.long().contiguous()
-            target_coords = target.coords.long().contiguous()
-            region_coords = region.coords.long().contiguous()
+            template = template.long()
+            target_coords = target.coords.long()
+            region_coords = region.coords.long()
 
             # --------------------------------------------------------
             # Build hashes
@@ -206,7 +206,7 @@ class InpaintSamplerMixin:
 
             matched_target_idx = sorted_target_idx[pos_target[valid_target]]
 
-            constrained_feats = target.feats[matched_target_idx].contiguous()
+            constrained_feats = target.feats[matched_target_idx]
 
             # ========================================================
             # Build initial sample
@@ -214,19 +214,16 @@ class InpaintSamplerMixin:
 
             feat_dim = target.feats.shape[1]
 
-            if noise is None:
-
-                feats = torch.randn(
+            feats = (
+                torch.randn(
                     template.shape[0],
                     feat_dim,
                     device=target.feats.device,
                     dtype=target.feats.dtype,
                 )
-
-            else:
-
-                feats = noise.feats.clone()
-
+                if noise is None
+                else noise.feats.clone()
+            )
             # initialize constrained region from target
             # feats[constrained_template_idx] = constrained_feats
 
@@ -234,15 +231,15 @@ class InpaintSamplerMixin:
 
             sample = SparseTensor(
                 feats=feats,
-                coords=template.contiguous(),
+                coords=template,
             )
 
             # ========================================================
             # Cache projection info
             self._inpaint_cache = {
                 "type": "sparse",
-                "constrained_idx": (constrained_template_idx.contiguous()),
-                "constrained_feats": (constrained_feats.contiguous()),
+                "constrained_idx": (constrained_template_idx),
+                "constrained_feats": (constrained_feats),
             }
 
             return sample
@@ -264,10 +261,9 @@ class InpaintSamplerMixin:
         feats = x.feats.clone()
 
         feats[cache["constrained_idx"]] = cache["constrained_feats"]
-        breakpoint()
         return SparseTensor(
-            feats=feats.contiguous(),
-            coords=x.coords.contiguous(),
+            feats=feats,
+            coords=x.coords,
         )
 
     # ============================================================
@@ -292,7 +288,7 @@ class InpaintSamplerMixin:
         x: Union[Tensor, SparseTensor],
     ) -> Union[Tensor, SparseTensor]:
 
-        if self._inpaint_cache is None:
+        if not hasattr(self, "_inpaint_cache") or self._inpaint_cache is None:
             return x
 
         if isinstance(x, Tensor):

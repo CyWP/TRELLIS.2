@@ -20,7 +20,7 @@
                 "sigma_min": 1e-5
             },
             "params": {
-                "steps": 18,
+                "steps": 12,
                 "guidance_strength": 7.5,
                 "guidance_rescale": 0.7,
                 "guidance_interval": [0.6, 1.0],
