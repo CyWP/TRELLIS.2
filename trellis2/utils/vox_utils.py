@@ -153,7 +153,7 @@ def mesh_to_voxel_volume(
         resolution,
     )
 
-    return torch.from_numpy(volume).permute(2, 0, 1)[None, None]
+    return torch.from_numpy(volume)[None, None]  # .permute(2, 0, 1)[None, None]
 
 
 def voxidx2vol(idx: torch.Tensor, vox_size: int, vol_size: int) -> torch.Tensor:
@@ -170,7 +170,7 @@ def voxidx2vol(idx: torch.Tensor, vox_size: int, vol_size: int) -> torch.Tensor:
     """
     ratio = vox_size // vol_size
     vol_idx = idx // ratio if ratio != 1 else idx
-    vol_idx = vol_idx.long()
+    vol_idx = vol_idx.int()
 
     vol = torch.zeros(
         (vol_size, vol_size, vol_size), device=idx.device, dtype=torch.bool

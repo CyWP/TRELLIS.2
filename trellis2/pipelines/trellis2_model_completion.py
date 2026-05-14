@@ -269,16 +269,15 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         vox2mesh(target > 0, save_path="voxel_presampled_test.glb")
         with self.get_model("sparse_structure_encoder") as ss_enc:
             enc_target = ss_enc(target[None, None])  # [1, 8, 16, 16, 16]
-        enc_region = 1 - F.interpolate(
+        enc_region = F.interpolate(
             region, (16, 16, 16), mode="trilinear", align_corners=False
         )
-        self.sparse_structure_sampler.set_target(enc_target, enc_region)
+        noise = self.sparse_structure_sampler.prepare_inpainting(enc_target, enc_region)
         # Sample sparse structure latent
         # SparseStructureFlowModel
         with self.get_model("sparse_structure_flow_model") as ss_flow:
             reso = ss_flow.resolution
             in_channels = ss_flow.in_channels
-            noise = torch.randn_like(enc_target)
             sampler_params = {**self.sparse_structure_sampler_params, **sampler_params}
             # FlowEulerGuidanceIntervalSample
             z_s = self.sparse_structure_sampler.sample(
@@ -297,9 +296,7 @@ class Trellis2ModelCompletionPipeline(Pipeline):
             decoded_float = region * decoded_float + (1 - region) * target
             decoded = decoded_float > 0.5
             # For testing voxel export
-            vox2mesh(
-                ss_dec(enc_target).squeeze(1), save_path="voxel_encdec.glb"
-            )  # same, confirms no permutation in enc dec
+            # vox2mesh(ss_dec(enc_target).squeeze(1), save_path="voxel_encdec.glb")
             vox2mesh(decoded.squeeze(1), save_path="voxel_sampled_test.glb")
         if resolution != decoded.shape[2]:
             ratio = decoded.shape[2] // resolution
@@ -315,6 +312,7 @@ class Trellis2ModelCompletionPipeline(Pipeline):
 
     def sample_shape_slat(
         self,
+        ss_coords: torch.Tensor,
         target: SparseTensor,
         region: SparseTensor,
         cond: dict,
@@ -330,12 +328,14 @@ class Trellis2ModelCompletionPipeline(Pipeline):
             coords (torch.Tensor): The coordinates of the sparse structure.
             sampler_params (dict): Additional parameters for the sampler.
         """
-        # Sample structured latent
-        noise = SparseTensor(
-            feats=torch.randn(coords.shape[0], flow_model.in_channels).to(self.device),
-            coords=coords,
-        )  # [15574, 4] for coords
-        self.shape_slat_sampler.set_target(target, region)
+        std = torch.tensor(self.shape_slat_normalization["std"])[None].to(target.device)
+        mean = torch.tensor(self.shape_slat_normalization["mean"])[None].to(
+            target.device
+        )
+        target.feats = (target.feats - mean) / std
+        noise = self.shape_slat_sampler.prepare_inpainting(
+            target, region, template=ss_coords
+        )
         # self.shape_slat_sampler.set_target(None, None)
         sampler_params = {**self.shape_slat_sampler_params, **sampler_params}
         if self.low_vram:
@@ -351,14 +351,13 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         if self.low_vram:
             flow_model.cpu()
 
-        std = torch.tensor(self.shape_slat_normalization["std"])[None].to(slat.device)
-        mean = torch.tensor(self.shape_slat_normalization["mean"])[None].to(slat.device)
         slat = slat * std + mean
 
         return slat
 
     def sample_tex_slat(
         self,
+        ss_coords: torch.Tensor,
         target: SparseTensor,
         region: SparseTensor,
         cond: dict,
@@ -381,19 +380,17 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         mean = torch.tensor(self.shape_slat_normalization["mean"])[None].to(
             shape_slat.device
         )
-        shape_slat = (shape_slat - mean) / std
-
-        in_channels = (
-            flow_model.in_channels
-            if isinstance(flow_model, nn.Module)
-            else flow_model[0].in_channels
+        shape_slat.feats = (shape_slat.feats - mean) / std
+        std = torch.tensor(self.tex_slat_normalization["std"])[None].to(
+            shape_slat.device
         )
-        noise = shape_slat.replace(
-            feats=torch.randn(
-                shape_slat.coords.shape[0], in_channels - shape_slat.feats.shape[1]
-            ).to(self.device)
+        mean = torch.tensor(self.tex_slat_normalization["mean"])[None].to(
+            shape_slat.device
         )
-        self.tex_slat_sampler.set_target(target, region)
+        target.feats = (target.feats - mean) / std
+        noise = self.tex_slat_sampler.prepare_inpainting(
+            target, region, template=ss_coords
+        )
         # self.tex_slat_sampler.set_target(None, None)
         sampler_params = {**self.tex_slat_sampler_params, **sampler_params}
         if self.low_vram:
@@ -410,8 +407,6 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         if self.low_vram:
             flow_model.cpu()
 
-        std = torch.tensor(self.tex_slat_normalization["std"])[None].to(slat.device)
-        mean = torch.tensor(self.tex_slat_normalization["mean"])[None].to(slat.device)
         slat = slat * std + mean
 
         return slat
@@ -477,6 +472,8 @@ class Trellis2ModelCompletionPipeline(Pipeline):
             tex_slat (SparseTensor): The structured latent for texture.
             resolution (int): The resolution of the output.
         """
+        shape_slat.coords = shape_slat.coords.to(torch.int32).contiguous()
+        tex_slat.coords = tex_slat.coords.to(torch.int32).contiguous()
         meshes, subs = self.decode_shape_slat(shape_slat, resolution)
         tex_voxels = self.decode_tex_slat(tex_slat, subs)
         out_mesh = []
@@ -552,6 +549,7 @@ class Trellis2ModelCompletionPipeline(Pipeline):
             verbose=True,
             timing=True,
         )
+
         pbr_feats = torch.cat(
             [pbr_attrs[k].float().to(self.device) for k in self.pbr_attr_layout.keys()],
             dim=1,
@@ -564,11 +562,10 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         ).to(self.device)
         with self.get_model("shape_slat_encoder") as shape_enc:
             shape_slat_target = shape_enc(o_vox_shape, intersected)
-        ss_target = (
-            voxidx2vol(shape_slat_target.coords[:, 1:], ss_res, ss_res)
-            .to(torch.float32)
-            .permute(2, 0, 1)
+        ss_target = voxidx2vol(shape_slat_target.coords[:, 1:], ss_res, ss_res).to(
+            torch.float32
         )
+
         # These two represent the same volume, but must both be preserved due to different ordering
         vox_idx_shape = vox_idx_shape.to(self.device)
         vox_idx_tex = vox_idx_tex.to(self.device)
@@ -576,33 +573,13 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         # Extract conditioning from render
         cond = self.get_cond(image=[image], resolution=o_vox_res)
 
-        # Extract sparse structure constraint from o-voxel
-        # ss_target = voxidx2vol(vox_idx_shape, o_vox_res, ss_res).to(torch.float32)
+        # Get new sparse structure
         ss = self.sample_sparse_structure(ss_target, ss_inpaint, cond, ss_res)
-        ss_coords = torch.argwhere(ss)[:, [0, 2, 3, 4]].int()
+        ss_coords = torch.argwhere(ss.squeeze(1)).int()
         # Get flow model names
         shape_flow_name, tex_flow_name = self.get_slat_models(pipeline_type)
+        region_coords = torch.argwhere(ss_inpaint.squeeze(1)).int()
 
-        # Build sparse region target
-        # o_vox_inpaint = F.interpolate(
-        #     ss_inpaint.float(),
-        #     (o_vox_res,) * 3,
-        #     mode="trilinear",
-        #     align_corners=False,
-        # )
-        # [N, 5] : [b, c, z, y, x]
-        breakpoint()
-        region_coords_full = torch.argwhere(~ss_inpaint).int()
-        # sparse coords: [b, z, y, x]
-        region_coords = region_coords_full[:, [0, 2, 3, 4]]
-        # gather mask values
-        # region_feats = o_vox_inpaint[
-        #     region_coords_full[:, 0],  # b
-        #     region_coords_full[:, 1],  # c
-        #     region_coords_full[:, 2],  # z
-        #     region_coords_full[:, 3],  # y
-        #     region_coords_full[:, 4],  # x
-        # ]
         region_feats = torch.ones(
             (region_coords.shape[0], 1), device=self.device, dtype=torch.float32
         )
@@ -615,6 +592,7 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         # Sample constrained shape slat
         with self.get_model(shape_flow_name) as shape_flow:
             shape_slat = self.sample_shape_slat(
+                ss_coords,
                 shape_slat_target,
                 sparse_region,
                 cond,
@@ -628,6 +606,7 @@ class Trellis2ModelCompletionPipeline(Pipeline):
             tex_slat_target = tex_enc(o_vox_tex)
         with self.get_model(tex_flow_name) as tex_flow:
             tex_slat = self.sample_tex_slat(
+                ss_coords,
                 tex_slat_target,
                 sparse_region,
                 cond,
@@ -638,4 +617,119 @@ class Trellis2ModelCompletionPipeline(Pipeline):
 
         torch.cuda.empty_cache()
         out_mesh = self.decode_latent(shape_slat, tex_slat, o_vox_res)
+        return out_mesh
+
+    @torch.no_grad()
+    def slat_test(
+        self,
+        mesh: Union[trimesh.Trimesh, trimesh.Scene],
+        resolution: int = 512,
+        save_path: str = "slat_test.glb",
+    ) -> MeshWithVoxel:
+        """
+        Test the SLat encode-decode cycle: mesh → ovox → slat → ovox → mesh.
+
+        Args:
+            mesh: Input trimesh mesh or scene
+            resolution: Resolution for O-Voxel conversion (512 or 1024)
+            save_path: Optional path to save the resulting mesh
+
+        Returns:
+            MeshWithVoxel: Decoded mesh with voxel attributes
+        """
+        vertices, faces = (torch.from_numpy(i) for i in get_scene_geometry(mesh))
+
+        print("Converting mesh geometry to O-Voxel...")
+        vox_idx, dual_vertices, intersected = (
+            o_voxel.convert.mesh_to_flexible_dual_grid(
+                vertices,
+                faces,
+                grid_size=resolution,
+                aabb=[[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
+                face_weight=1.0,
+                boundary_weight=0.2,
+                regularization_weight=1e-2,
+                timing=True,
+            )
+        )
+
+        o_vox = SparseTensor(
+            feats=dual_vertices * resolution - vox_idx,
+            coords=torch.cat([torch.zeros_like(vox_idx[:, 0:1]), vox_idx], dim=-1),
+        ).to(self.device)
+        intersected = o_vox.replace(intersected).to(self.device)
+
+        print("Converting mesh textures to O-Voxel...")
+        vox_idx_tex, pbr_attrs = o_voxel.convert.textured_mesh_to_volumetric_attr(
+            mesh,
+            1 / resolution,
+            aabb=[[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
+            verbose=True,
+            timing=True,
+        )
+        pbr_feats = torch.cat(
+            [pbr_attrs[k].float().to(self.device) for k in self.pbr_attr_layout.keys()],
+            dim=1,
+        )
+        o_vox_tex = SparseTensor(
+            feats=pbr_feats,
+            coords=torch.cat(
+                [torch.zeros_like(vox_idx_tex[:, 0:1]), vox_idx_tex], dim=-1
+            ),
+        ).to(self.device)
+
+        print("Encoding to shape SLat...")
+        if self.low_vram:
+            self.models["shape_slat_encoder"].to(self.device)
+        shape_slat = self.models["shape_slat_encoder"](o_vox, intersected)
+        if self.low_vram:
+            self.models["shape_slat_encoder"].cpu()
+
+        print("Encoding to tex SLat...")
+        if self.low_vram:
+            self.models["tex_slat_encoder"].to(self.device)
+        tex_slat = self.models["tex_slat_encoder"](o_vox_tex)
+        if self.low_vram:
+            self.models["tex_slat_encoder"].cpu()
+
+        print("Decoding SLat to mesh...")
+        meshes, subs = self.decode_shape_slat(shape_slat, resolution)
+        tex_voxels = self.decode_tex_slat(tex_slat, subs)
+
+        if len(meshes) == 0:
+            raise ValueError("Decoding produced no meshes")
+
+        decoded_mesh = meshes[0]
+        decoded_vox = tex_voxels[0]
+        decoded_mesh.fill_holes()
+
+        out_mesh = MeshWithVoxel(
+            decoded_mesh.vertices,
+            decoded_mesh.faces,
+            origin=[-0.5, -0.5, -0.5],
+            voxel_size=1 / resolution,
+            coords=decoded_vox.coords[:, 1:],
+            attrs=decoded_vox.feats,
+            voxel_shape=torch.Size([*decoded_vox.shape, *decoded_vox.spatial_shape]),
+            layout=self.pbr_attr_layout,
+        )
+
+        if save_path:
+            glb = o_voxel.postprocess.to_glb(
+                vertices=out_mesh.vertices,
+                faces=out_mesh.faces,
+                attr_volume=out_mesh.attrs,
+                coords=out_mesh.coords,
+                attr_layout=out_mesh.layout,
+                voxel_size=out_mesh.voxel_size,
+                aabb=[[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
+                decimation_target=1000000,
+                texture_size=4096,
+                remesh=True,
+                remesh_band=1,
+                remesh_project=0,
+                verbose=True,
+            )
+            glb.export(save_path, extension_webp=True)
+
         return out_mesh

@@ -2,7 +2,7 @@
     "name": "Trellis2ImageTo3DPipeline",
     "args": {
         "models": {
-	    "sparse_structure_encoder": "microsoft/TRELLIS-image-large/ckpts/ss_enc_conv3d_16l8_fp16",
+	        "sparse_structure_encoder": "microsoft/TRELLIS-image-large/ckpts/ss_enc_conv3d_16l8_fp16",
             "sparse_structure_decoder": "microsoft/TRELLIS-image-large/ckpts/ss_dec_conv3d_16l8_fp16",
             "sparse_structure_flow_model": "ckpts/ss_flow_img_dit_1_3B_64_bf16",
             "shape_slat_encoder": "ckpts/shape_enc_next_dc_f16c32_fp16",
@@ -20,7 +20,7 @@
                 "sigma_min": 1e-5
             },
             "params": {
-                "steps": 12,
+                "steps": 18,
                 "guidance_strength": 7.5,
                 "guidance_rescale": 0.7,
                 "guidance_interval": [0.6, 1.0],

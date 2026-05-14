@@ -16,14 +16,16 @@ pipeline = Trellis2ModelCompletionPipeline.from_pretrained(
 pipeline.cuda()
 
 # 2. Load Mesh, image & Run
-mesh = trimesh.load("/home/cyvv/share/Research/trellis-modeller/r2dhorse.glb")
+base = trimesh.load("/home/cyvv/share/Research/trellis-modeller/r2dhorse_noperm.glb")
 inpaint_region = trimesh.load(
-    "/home/cyvv/share/Research/trellis-modeller/r2dhorse_inpaint_region.glb"
+    "/home/cyvv/share/Research/trellis-modeller/r2dhorse_inpaint_region_noperm.glb"
 )
 image = Image.open(
-    "/home/cyvv/share/Research/trellis-modeller/r2dhorse_render_inpainted.png"
+    "/home/cyvv/share/Research/trellis-modeller/r2dhorse_render_inpainted_scarf.png"
 )
-mesh = pipeline.run(mesh, image, inpaint_region)[0]
+# pipeline.slat_test(base, resolution=1024)
+# exit()
+mesh = pipeline.run(base, image, inpaint_region)[0]
 
 print("Export to GLB")
 # 5. Export to GLB
@@ -42,4 +44,4 @@ glb = o_voxel.postprocess.to_glb(
     remesh_project=0,
     verbose=True,
 )
-glb.export("sample_inpaint.glb", extension_webp=True)
+glb.export("sample_inpaint_1.glb", extension_webp=True)
