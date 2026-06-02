@@ -469,7 +469,6 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         mean = torch.tensor(self.shape_slat_normalization["mean"])[None].to(
             shape_slat.device
         )
-        breakpoint()
         shape_slat = (shape_slat - mean) / std
 
         in_channels = (
@@ -520,7 +519,6 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         if self.low_vram:
             self.models["tex_slat_decoder"].to(self.device)
         ret = self.models["tex_slat_decoder"](slat, guide_subs=subs) * 0.5 + 0.5
-        breakpoint()
         if self.low_vram:
             self.models["tex_slat_decoder"].cpu()
         return ret

@@ -5,6 +5,45 @@ import numpy as np
 from typing import Union, List, Literal
 
 
+def box_filter(
+    volume: torch.Tensor,
+    kernel_size: int,
+    stride: int = 1,
+    padding: int = None,
+) -> torch.Tensor:
+    """
+    Apply a 3D box filter to a volume tensor.
+
+    Args:
+        volume: Tensor of shape (C, D, H, W) or (B, C, D, H, W)
+        kernel_size: Size of the box filter kernel
+        stride: Stride for the convolution (default: 1)
+        padding: Padding for the convolution. If None, uses kernel_size // 2 to preserve input shape.
+
+    Returns:
+        Filtered volume with same shape as input
+    """
+    if padding is None:
+        padding = kernel_size // 2
+    if volume.dim() == 4:
+        volume = volume.unsqueeze(0)
+        squeeze_back = True
+    elif volume.dim() == 5:
+        squeeze_back = False
+    else:
+        raise ValueError(f"Expected 4D or 5D tensor, got {volume.dim()}D")
+
+    kernel = torch.ones(volume.shape[1], volume.shape[1], kernel_size, kernel_size, kernel_size, device=volume.device, dtype=volume.dtype)
+    kernel = kernel / kernel.numel()
+
+    filtered = F.conv3d(volume, kernel, stride=stride, padding=padding)
+
+    if squeeze_back:
+        filtered = filtered.squeeze(0)
+
+    return filtered
+
+
 def resample_volume(
     volume: torch.Tensor, resolution, mode: str = "trilinear", threshold: float = 0.1
 ) -> torch.Tensor:

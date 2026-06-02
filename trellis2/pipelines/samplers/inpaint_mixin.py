@@ -55,7 +55,7 @@ class InpaintSamplerMixin:
                 "pred_x_0": [],
             }
         )
-
+        step = 0
         for t, t_prev in tqdm(
             t_pairs,
             desc=tqdm_desc,
@@ -74,12 +74,14 @@ class InpaintSamplerMixin:
             sample = out.pred_x_prev
 
             # enforce constraints
-            sample = self._apply_inpaint(sample)
+            if hasattr(self, "start_step") and step >= self.start_step:
+                sample = self._apply_inpaint(sample)
 
             out.pred_x_prev = sample
 
             ret.pred_x_t.append(out.pred_x_prev)
             ret.pred_x_0.append(out.pred_x_0)
+            step += 1
 
         ret.samples = sample
 
@@ -117,8 +119,9 @@ class InpaintSamplerMixin:
         region: Union[Tensor, SparseTensor],
         noise: Optional[Union[Tensor, SparseTensor]] = None,
         template: Optional[Tensor] = None,
+        start_step: int = 0,
     ) -> Union[Tensor, SparseTensor]:
-
+        self.start_step = start_step
         self._inpaint_cache = None
 
         # ============================================================

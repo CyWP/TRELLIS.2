@@ -19,6 +19,7 @@ from ..utils.vox_utils import (
     vox2mesh,
     mesh_to_voxel_volume,
     resample_volume,
+    box_filter,
 )
 from ..utils.render_utils import render_frames, yaw_pitch_r_fov_to_extrinsics_intrinsics
 
@@ -388,7 +389,6 @@ class Trellis2ModelCompletionPipeline(Pipeline):
             shape_slat.device
         )
         target = (target - mean) / std
-
         noise = self.tex_slat_sampler.prepare_inpainting(
             target, region, template=shape_slat.coords
         )
@@ -524,6 +524,9 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         ]
 
         ss_inpaint = mesh_to_voxel_volume(inpaint_region, ss_res).to(self.device)
+        ss_inpaint = box_filter(
+            torch.nn.functional.max_pool3d(ss_inpaint.float(), 3, 1, 1), 5
+        )
         # Preprocess image
         image = self.preprocess_image(image)
 
@@ -557,10 +560,16 @@ class Trellis2ModelCompletionPipeline(Pipeline):
             verbose=True,
             timing=True,
         )
-
-        pbr_feats = torch.cat(
-            [pbr_attrs[k].float().to(self.device) for k in self.pbr_attr_layout.keys()],
-            dim=1,
+        pbr_feats = (
+            torch.cat(
+                [
+                    pbr_attrs[k].float().to(self.device)
+                    for k in self.pbr_attr_layout.keys()
+                ],
+                dim=1,
+            )
+            / 127.5
+            - 1
         )
         o_vox_tex = SparseTensor(
             feats=pbr_feats,
@@ -620,7 +629,7 @@ class Trellis2ModelCompletionPipeline(Pipeline):
                 cond,
                 tex_flow,
                 shape_slat,
-                shape_slat_sampler_params,
+                tex_slat_sampler_params,
             )
 
         torch.cuda.empty_cache()
@@ -680,7 +689,7 @@ class Trellis2ModelCompletionPipeline(Pipeline):
             dim=1,
         )
         o_vox_tex = SparseTensor(
-            feats=pbr_feats,
+            feats=(pbr_feats - 0.5) * 2,
             coords=torch.cat(
                 [torch.zeros_like(vox_idx_tex[:, 0:1]), vox_idx_tex], dim=-1
             ),

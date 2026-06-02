@@ -9,21 +9,22 @@ import imageio
 from PIL import Image
 import torch
 from trellis2.pipelines import Trellis2ImageTo3DPipeline
-from trellis2.utils import render_utils
-from trellis2.renderers import EnvMap
+
+# from trellis2.utils import render_utils
+# from trellis2.renderers import EnvMap
 import o_voxel
 
 # 1. Setup Environment Map
-envmap = EnvMap(
-    torch.tensor(
-        cv2.cvtColor(
-            cv2.imread("assets/hdri/forest.exr", cv2.IMREAD_UNCHANGED),
-            cv2.COLOR_BGR2RGB,
-        ),
-        dtype=torch.float32,
-        device="cuda",
-    )
-)
+# envmap = EnvMap(
+#     torch.tensor(
+#         cv2.cvtColor(
+#             cv2.imread("assets/hdri/forest.exr", cv2.IMREAD_UNCHANGED),
+#             cv2.COLOR_BGR2RGB,
+#         ),
+#         dtype=torch.float32,
+#         device="cuda",
+#     )
+# )
 
 # 2. Load Pipeline
 pipeline = Trellis2ImageTo3DPipeline.from_pretrained("microsoft/TRELLIS.2-4B")
@@ -31,7 +32,7 @@ pipeline.cuda()
 
 # 3. Load Image & Run
 image = Image.open(
-    "/home/cyvv/share/Research/trellis-modeller/r2dhorse_render_inpainted.png"
+    "/home/cyvv/share/Research/trellis-modeller/r2dhorse_render_inpainted_scarf.png"
 )
 print("Run pipe")
 mesh = pipeline.run(image)[0]
@@ -58,4 +59,4 @@ glb = o_voxel.postprocess.to_glb(
     remesh_project=0,
     verbose=True,
 )
-glb.export("sample.glb", extension_webp=True)
+glb.export("render_gen_example.glb", extension_webp=True)
