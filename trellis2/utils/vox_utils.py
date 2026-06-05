@@ -33,7 +33,15 @@ def box_filter(
     else:
         raise ValueError(f"Expected 4D or 5D tensor, got {volume.dim()}D")
 
-    kernel = torch.ones(volume.shape[1], volume.shape[1], kernel_size, kernel_size, kernel_size, device=volume.device, dtype=volume.dtype)
+    kernel = torch.ones(
+        volume.shape[1],
+        volume.shape[1],
+        kernel_size,
+        kernel_size,
+        kernel_size,
+        device=volume.device,
+        dtype=volume.dtype,
+    )
     kernel = kernel / kernel.numel()
 
     filtered = F.conv3d(volume, kernel, stride=stride, padding=padding)

@@ -7,28 +7,26 @@ import trimesh
 from PIL import Image
 from trellis2.pipelines.trellis2_model_completion import Trellis2ModelCompletionPipeline
 import o_voxel
+import time
+import shutil
 
-# 1. Load Pipeline
+BASE_FOLDER = "/home/cyvv/share/Research/trellis-modeller/Tests/001"
+MODEL_PATH = f"{BASE_FOLDER}/model.glb"
+IMAGE_PATH = f"{BASE_FOLDER}/render_inpainted.png"
+REGION_PATH = f"{BASE_FOLDER}/infill.glb"
+OUT_PATH = f"{BASE_FOLDER}/out_{int(time.time())}.glb"
+
 pipeline = Trellis2ModelCompletionPipeline.from_pretrained(
     "/home/cyvv/share/.cache/huggingface/hub/models--microsoft--TRELLIS.2-4B/snapshots/af44b45f2e35a493886929c6d786e563ec68364d",
     config_file="pipeline_completion.json",
 )
 pipeline.cuda()
 
-# 2. Load Mesh, image & Run
-base = trimesh.load("/home/cyvv/share/Research/trellis-modeller/r2dhorse_noperm.glb")
-inpaint_region = trimesh.load(
-    "/home/cyvv/share/Research/trellis-modeller/r2dhorse_inpaint_region_noperm.glb"
-)
-image = Image.open(
-    "/home/cyvv/share/Research/trellis-modeller/r2dhorse_render_inpainted_scarf.png"
-)
-# pipeline.slat_test(base, resolution=1024)
-# exit()
+base = trimesh.load(MODEL_PATH)
+inpaint_region = trimesh.load(REGION_PATH)
+image = Image.open(IMAGE_PATH)
 mesh = pipeline.run(base, image, inpaint_region)[0]
 
-print("Export to GLB")
-# 5. Export to GLB
 glb = o_voxel.postprocess.to_glb(
     vertices=mesh.vertices,
     faces=mesh.faces,
@@ -44,4 +42,6 @@ glb = o_voxel.postprocess.to_glb(
     remesh_project=0,
     verbose=True,
 )
-glb.export("sample_inpaint_1.glb", extension_webp=True)
+
+glb.export(OUT_PATH, extension_webp=True)
+shutil.copy(OUT_PATH, "./latest.glb")

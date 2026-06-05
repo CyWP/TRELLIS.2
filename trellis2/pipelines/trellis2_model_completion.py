@@ -267,7 +267,7 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         """
         # Encode target and get mask
         region = region.float()
-        vox2mesh(target > 0, save_path="voxel_presampled_test.glb")
+        # vox2mesh(target > 0, save_path="voxel_presampled_test.glb")
         with self.get_model("sparse_structure_encoder") as ss_enc:
             enc_target = ss_enc(target[None, None])  # [1, 8, 16, 16, 16]
         enc_region = F.interpolate(
@@ -298,7 +298,7 @@ class Trellis2ModelCompletionPipeline(Pipeline):
             decoded = decoded_float > 0.5
             # For testing voxel export
             # vox2mesh(ss_dec(enc_target).squeeze(1), save_path="voxel_encdec.glb")
-            vox2mesh(decoded.squeeze(1), save_path="voxel_sampled_test.glb")
+            # vox2mesh(decoded.squeeze(1), save_path="voxel_sampled_test.glb")
         if resolution != decoded.shape[2]:
             ratio = decoded.shape[2] // resolution
             decoded = (
@@ -501,6 +501,8 @@ class Trellis2ModelCompletionPipeline(Pipeline):
             )
         return out_mesh
 
+    # def o_vox_combine(self, gen: SparseTensor, target: SparseTensor, weights: torch.Tensor)->SparseTensor:
+
     @torch.no_grad()
     def run(
         self,
@@ -524,9 +526,9 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         ]
 
         ss_inpaint = mesh_to_voxel_volume(inpaint_region, ss_res).to(self.device)
-        ss_inpaint = box_filter(
-            torch.nn.functional.max_pool3d(ss_inpaint.float(), 3, 1, 1), 5
-        )
+        # ss_inpaint = box_filter(
+        #     torch.nn.functional.max_pool3d(ss_inpaint.float(), 3, 1, 1), 5
+        # )
         # Preprocess image
         image = self.preprocess_image(image)
 
@@ -592,18 +594,19 @@ class Trellis2ModelCompletionPipeline(Pipeline):
 
         # Get new sparse structure
         ss = self.sample_sparse_structure(ss_target, ss_inpaint, cond, ss_res)
-        ss_coords = torch.argwhere(ss.squeeze(1)).int()
+        vox2mesh(ss.squeeze(1), save_path="latest_ss.glb")
+        # ss_coords = torch.argwhere(ss.squeeze(1)).int()
+        ss_coords = ss.squeeze(1).nonzero()
         # Get flow model names
         shape_flow_name, tex_flow_name = self.get_slat_models(pipeline_type)
-        region_coords = torch.argwhere(ss_inpaint.squeeze(1)).int()
 
-        region_feats = torch.ones(
-            (region_coords.shape[0], 1), device=self.device, dtype=torch.float32
-        )
-        # optional feature dim
         sparse_region = SparseTensor(
-            feats=region_feats,
-            coords=region_coords,
+            feats=ss_inpaint[ss_inpaint > 0],
+            coords=ss_inpaint.squeeze(1).nonzero(),
+        )
+        sparse_region_hard = SparseTensor(
+            feats=torch.ones_like(sparse_region.feats),
+            coords=sparse_region.coords,
         )
 
         # Sample constrained shape slat
