@@ -296,3 +296,47 @@ def vox2mesh(
         mesh.export(save_path)
 
     return mesh
+
+
+def gaussian_blur_3d(x: torch.Tensor, sigma: float, kernel_size: int):
+    """
+    x: (B, C, D, H, W)
+    sigma: Gaussian std
+    kernel_size: odd integer
+    """
+
+    if kernel_size % 2 == 0:
+        raise ValueError("kernel_size must be odd")
+
+    radius = kernel_size // 2
+
+    coords = torch.arange(
+        -radius,
+        radius + 1,
+        device=x.device,
+        dtype=x.dtype,
+    )
+
+    kernel_1d = torch.exp(-(coords**2) / (2 * sigma**2))
+    kernel_1d = kernel_1d / kernel_1d.sum()
+
+    kernel_3d = (
+        kernel_1d[:, None, None] * kernel_1d[None, :, None] * kernel_1d[None, None, :]
+    )
+
+    kernel_3d = kernel_3d.view(
+        1,
+        1,
+        kernel_size,
+        kernel_size,
+        kernel_size,
+    )
+
+    kernel_3d = kernel_3d.repeat(x.shape[1], 1, 1, 1, 1)
+
+    return F.conv3d(
+        x,
+        kernel_3d,
+        padding=radius,
+        groups=x.shape[1],
+    )

@@ -139,18 +139,10 @@ class InpaintSamplerMixin:
             raise TypeError(f"Unsupported type: {type(target)}")
 
     def prepare_dense_inpainting(
-        self,
-        target: Tensor,
-        region: Tensor,
-        noise: Optional[Tensor] = None,
+        self, target: Tensor, region: Tensor, noise: Optional[Tensor] = None
     ) -> Tensor:
-
         if noise is None:
             noise = torch.randn_like(target)
-
-        target_exists = target.abs().sum(dim=1, keepdim=True) > 0
-
-        constraint_mask = (region <= 0) & target_exists
 
         self._inpaint_cache = {
             "type": "dense",
@@ -158,7 +150,6 @@ class InpaintSamplerMixin:
             "target": target,
             "noise": noise.clone(),
         }
-
         return noise
 
     def prepare_hard_sparse_inpainting(
@@ -168,50 +159,81 @@ class InpaintSamplerMixin:
         template: Tensor,
         noise: Optional[Union[SparseTensor, Tensor]] = None,
     ) -> SparseTensor:
-
         if template is None:
             raise ValueError("Sparse inpainting requires template coords.")
 
-        target_coords = target.coords
-        region_coords = region.coords if isinstance(region, SparseTensor) else region
+        target_coords = target.coords  # coords of target, should be subset of template
+        region_coords = (
+            region.coords if isinstance(region, SparseTensor) else region
+        )  # Region where we want to inpaint>0, not fully subset of template
+
+        # --------------------------------------------------------
+        # Build hashes
+        # --------------------------------------------------------
 
         template_hash = self._sparse_coord_hash(template)
         target_hash = self._sparse_coord_hash(target_coords)
         region_hash = self._sparse_coord_hash(region_coords)
 
+        # ========================================================
+        # Determine constrained template coords
+        #
+        # constrained =
+        #     template ∩ target ∩ (~region)
+        # ========================================================
+
         sorted_region_hash, _ = torch.sort(region_hash)
 
-        pos_region = torch.searchsorted(
+        tmpl_pos_region = torch.searchsorted(
             sorted_region_hash,
             template_hash,
         )
 
-        inside_region = (pos_region < len(sorted_region_hash)) & (
-            sorted_region_hash[pos_region.clamp(max=len(sorted_region_hash) - 1)]
+        tmpl_inside_region = (tmpl_pos_region < len(sorted_region_hash)) & (
+            sorted_region_hash[tmpl_pos_region.clamp(max=len(sorted_region_hash) - 1)]
             == template_hash
-        )
+        )  # 1d of bools, shape is len(template.co). True = idx is inside region, False is outside.
 
-        constrained_idx = (~inside_region).nonzero().squeeze(1)
+        # outside editable region
+        constrained_template_idx = (
+            (~tmpl_inside_region).nonzero().squeeze(1)
+        )  # 1D indices of all template indices outside of region shape is len(tempate.co)-tmpl_inside_region.sum()
 
-        constrained_hash = template_hash[constrained_idx]
+        # inside editable region
+        free_template_idx = (tmpl_inside_region).nonzero().squeeze(1)
+
+        constrained_template_hash = template_hash[constrained_template_idx]
+        free_template_hash = template_hash[free_template_idx]
+
+        # ========================================================
+        # Match constrained template coords -> target coords
+        # ========================================================
 
         sorted_target_hash, sorted_target_idx = torch.sort(target_hash)
 
         pos_target = torch.searchsorted(
             sorted_target_hash,
-            constrained_hash,
+            constrained_template_hash,
         )
 
         valid_target = (pos_target < len(sorted_target_hash)) & (
             sorted_target_hash[pos_target.clamp(max=len(sorted_target_hash) - 1)]
-            == constrained_hash
+            == constrained_template_hash
         )
 
-        constrained_idx = constrained_idx[valid_target]
+        # keep only coords that actually exist in target
+        constrained_template_idx = constrained_template_idx[valid_target]
 
         matched_target_idx = sorted_target_idx[pos_target[valid_target]]
 
         constrained_feats = target.feats[matched_target_idx]
+
+        # Check matched_target_idx and what it represents
+        # Find indices of region that are used,so we can keep the tensor of relevant weights
+
+        # ========================================================
+        # Build initial sample
+        # ========================================================
 
         feat_dim = target.feats.shape[1]
 
@@ -223,7 +245,7 @@ class InpaintSamplerMixin:
                 dtype=target.feats.dtype,
             )
             if noise is None
-            else (noise.feats if isinstance(noise, SparseTensor) else noise)
+            else noise.feats if isinstance(noise, SparseTensor) else noise
         )
 
         sample = SparseTensor(
@@ -231,69 +253,174 @@ class InpaintSamplerMixin:
             coords=template,
         )
 
+        # ========================================================
+        # Cache projection info
         self._inpaint_cache = {
-            "type": "sparse",
-            "idx": constrained_idx,
-            "target": constrained_feats,
-            "noise": sample.feats[constrained_idx].clone(),
+            "type": "sparse_hard",
+            "constrained_idx": (constrained_template_idx),
+            "constrained_feats": (constrained_feats),
+            "noise": sample.feats.clone(),
         }
 
         return sample
 
     def prepare_soft_sparse_inpainting(
         self,
-        target,
-        region,
-        template,
-        noise=None,
-    ):
-        return self.prepare_hard_sparse_inpainting(
-            target,
-            region,
-            template,
-            noise,
+        target: SparseTensor,
+        region: SparseTensor,
+        template: SparseTensor,
+        noise: Optional[SparseTensor] = None,
+    ) -> SparseTensor:
+        if template is None:
+            raise ValueError("Sparse inpainting requires template coords.")
+
+        template = template.long()
+        target_coords = target.coords.long()
+        region_coords = region.coords.long()
+
+        feat_dim = target.feats.shape[1]
+
+        # ========================================================
+        # Build hashes for coord matching
+        # ========================================================
+
+        template_hash = self._sparse_coord_hash(template)
+        target_hash = self._sparse_coord_hash(target_coords)
+        region_hash = self._sparse_coord_hash(region_coords)
+
+        # ========================================================
+        # Initialize per-template-coord weights and targets
+        # weight=0: fully constrained to target
+        # weight=1: fully free (use sample)
+        # ========================================================
+
+        weights = torch.zeros(
+            template.shape[0],
+            1,
+            device=target.feats.device,
+            dtype=target.feats.dtype,
+        )
+        target_feats = torch.zeros(
+            template.shape[0],
+            feat_dim,
+            device=target.feats.device,
+            dtype=target.feats.dtype,
+        )
+        has_target = torch.zeros(
+            template.shape[0],
+            1,
+            dtype=torch.bool,
+            device=target.feats.device,
         )
 
-    def _apply_sparse_inpaint(
-        self,
-        x: SparseTensor,
-        t: float,
-    ) -> SparseTensor:
+        # ========================================================
+        # Match template -> target (get target features)
+        # ========================================================
+
+        sorted_target_hash, sorted_target_idx = torch.sort(target_hash)
+        pos_target = torch.searchsorted(sorted_target_hash, template_hash)
+        valid_target = (pos_target < len(sorted_target_hash)) & (
+            sorted_target_hash[pos_target.clamp(max=len(sorted_target_hash) - 1)]
+            == template_hash
+        )
+        matched_template_to_target = valid_target.nonzero().squeeze(1)
+        matched_target_idx = sorted_target_idx[pos_target[valid_target]]
+        has_target[matched_template_to_target] = True
+        target_feats[matched_template_to_target] = target.feats[matched_target_idx]
+
+        # ========================================================
+        # Match template -> region (get weights)
+        # ========================================================
+
+        sorted_region_hash, sorted_region_idx = torch.sort(region_hash)
+        pos_region = torch.searchsorted(sorted_region_hash, template_hash)
+        in_region = (pos_region < len(sorted_region_hash)) & (
+            sorted_region_hash[pos_region.clamp(max=len(sorted_region_hash) - 1)]
+            == template_hash
+        )
+        matched_template_to_region = in_region.nonzero().squeeze(1)
+        matched_region_idx = sorted_region_idx[pos_region[in_region]]
+        region_w = region.feats[matched_region_idx]
+        if region_w.dim() == 1:
+            region_w = region_w.unsqueeze(-1)
+        weights[matched_template_to_region] = region_w
+
+        # ========================================================
+        # Free where no target available
+        # ========================================================
+        weights[~has_target] = 1.0
+
+        # ========================================================
+        # Build initial sample (random noise)
+        # ========================================================
+
+        feats = (
+            torch.randn(
+                template.shape[0],
+                feat_dim,
+                device=target.feats.device,
+                dtype=target.feats.dtype,
+            )
+            if noise is None
+            else noise.feats
+        )
+
+        sample = SparseTensor(
+            feats=feats,
+            coords=template,
+        )
+
+        # ========================================================
+        # Cache for apply step
+        # ========================================================
+        # breakpoint()
+        self._inpaint_cache = {
+            "type": "sparse_soft",
+            "weights": weights,
+            "target_feats": target_feats,
+            "noise": sample.feats.clone(),
+        }
+
+        return sample
+
+    def _apply_sparse_inpaint(self, x: SparseTensor, t: float) -> SparseTensor:
 
         cache = self._inpaint_cache
 
-        constrained_xt = t * cache["noise"] + (1 - t) * cache["target"]
-
-        feats = x.feats.clone()
-
-        feats[cache["idx"]] = constrained_xt
-
-        return SparseTensor(
-            feats=feats,
-            coords=x.coords,
-        )
+        if cache["type"] == "sparse_soft":
+            constrained_xt = t * cache["noise"] + (1 - t) * cache["target_feats"]
+            feats = (
+                cache["weights"] * x.feats + (1.0 - cache["weights"]) * constrained_xt
+            )
+            return SparseTensor(
+                feats=feats,
+                coords=x.coords,
+            )
+        else:
+            feats = x.feats.clone()
+            constrained_xt = (
+                t * cache["noise"][cache["constrained_idx"]]
+                + (1 - t) * cache["constrained_feats"]
+            )
+            feats[cache["constrained_idx"]] = constrained_xt
+            return SparseTensor(
+                feats=feats,
+                coords=x.coords,
+            )
 
     # ============================================================
     # Dense projection
     # ============================================================
 
-    def _apply_dense_inpaint(
-        self,
-        x: Tensor,
-        t: float,
-    ) -> Tensor:
+    def _apply_dense_inpaint(self, x: Tensor, t: float) -> Tensor:
 
         cache = self._inpaint_cache
 
         constrained_xt = t * cache["noise"] + (1 - t) * cache["target"]
 
-        region = cache["region"]
+        return cache["region"] * x + (1 - cache["region"]) * constrained_xt
 
-        return region * x + (1 - region) * constrained_xt
-
-        mask = cache["mask"].to(x.dtype)
-
-        return (1 - mask) * x + mask * constrained_xt
+        return cache["region"] * x + (1.0 - cache["region"]) * cache["target"]
 
     # ============================================================
     # Generic projection
@@ -412,9 +539,6 @@ class InpaintSamplerMixin:
                 noise = (noise - noise.mean()) / noise.std()
             if hasattr(self, "_inpaint_cache"):
                 self._inpaint_cache["noise"] = (
-                    noise.clone()
-                    if isinstance(noise, Tensor)
-                    else noise.feats[self._inpaint_cache["idx"]]
+                    noise.clone() if isinstance(noise, Tensor) else noise.feats.clone()
                 )
-
         return noise

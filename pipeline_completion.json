@@ -22,8 +22,8 @@
             "params": {
                 "steps": 12,
                 "guidance_strength": 7.5,
-                "guidance_rescale": 0.7,
-                "guidance_interval": [0.6, 1.0],
+                "guidance_rescale": 0.9,
+                "guidance_interval": [0.5, 1.0],
                 "rescale_t": 5.0
             }
         },
@@ -61,7 +61,7 @@
             },
             "params": {
                 "steps": 12,
-                "guidance_strength": 1.0,
+                "guidance_strength": 1.25,
                 "guidance_rescale": 0.0,
                 "guidance_interval": [0.6, 0.9],
                 "rescale_t": 3.0

@@ -32,7 +32,7 @@ pipeline.cuda()
 
 # 3. Load Image & Run
 image = Image.open(
-    "/home/cyvv/share/Research/trellis-modeller/r2dhorse_render_inpainted_scarf.png"
+    "/home/cyvv/share/Research/trellis-modeller/Tests/001/render_inpainted.png"
 )
 print("Run pipe")
 mesh = pipeline.run(image)[0]

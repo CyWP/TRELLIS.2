@@ -1,10 +1,70 @@
-from typing import Tuple, Dict, Union
+from typing import Tuple, Dict, Union, List
 import numpy as np
 from trimesh import grouping, util, remesh
 import trimesh
 import struct
 import re
 from plyfile import PlyData, PlyElement
+
+
+def scale_to_box(
+    geometries: List[Union[trimesh.Trimesh, trimesh.Scene]],
+    bounds: np.ndarray = np.array([[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]]),
+) -> List[Union[trimesh.Trimesh, trimesh.Scene]]:
+    """
+    Uniformly scale and translate a collection of meshes/scenes so that
+    their combined AABB fits inside the target bounding box.
+
+    The same transform is applied to every geometry.
+
+    Parameters
+    ----------
+    geometries : list of trimesh.Trimesh or trimesh.Scene
+    bounds : (2, 3) array-like
+        Target AABB as [[xmin, ymin, zmin], [xmax, ymax, zmax]].
+
+    Returns
+    -------
+    list
+        Transformed copies of the input geometries in the same order.
+    """
+    if len(geometries) == 0:
+        return []
+
+    bounds = np.asarray(bounds, dtype=float)
+
+    # Compute union AABB
+    mins = []
+    maxs = []
+    for geom in geometries:
+        b = geom.bounds
+        mins.append(b[0])
+        maxs.append(b[1])
+
+    src_min = np.min(mins, axis=0)
+    src_max = np.max(maxs, axis=0)
+
+    src_size = src_max - src_min
+    src_center = 0.5 * (src_min + src_max)
+
+    dst_size = bounds[1] - bounds[0]
+    dst_center = 0.5 * (bounds[0] + bounds[1])
+
+    scale = np.min(dst_size / np.maximum(src_size, 1e-12))
+
+    transform = (
+        trimesh.transformations.translation_matrix(dst_center)
+        @ trimesh.transformations.scale_matrix(scale)
+        @ trimesh.transformations.translation_matrix(-src_center)
+    )
+
+    result = []
+    for geom in geometries:
+        g = geom.copy()
+        g.apply_transform(transform)
+        result.append(g)
+
+    return result
 
 
 def read_ply(filename):
@@ -302,7 +362,7 @@ def get_scene_geometry(
         groups = scene.dump()
     else:
         groups = [scene]
-    
+
     all_vertices = []
     all_faces = []
     vertex_offset = 0
@@ -313,7 +373,15 @@ def get_scene_geometry(
             all_faces.append(mesh.faces + vertex_offset)
             vertex_offset += len(mesh.vertices)
 
-    vertices = np.concatenate(all_vertices, axis=0) if all_vertices else np.empty((0, 3), dtype=np.float32)
-    faces = np.concatenate(all_faces, axis=0) if all_faces else np.empty((0, 3), dtype=np.int32)
+    vertices = (
+        np.concatenate(all_vertices, axis=0)
+        if all_vertices
+        else np.empty((0, 3), dtype=np.float32)
+    )
+    faces = (
+        np.concatenate(all_faces, axis=0)
+        if all_faces
+        else np.empty((0, 3), dtype=np.int32)
+    )
 
     return vertices, faces

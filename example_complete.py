@@ -10,7 +10,7 @@ import o_voxel
 import time
 import shutil
 
-BASE_FOLDER = "/home/cyvv/share/Research/trellis-modeller/Tests/001"
+BASE_FOLDER = "/home/cyvv/share/Research/trellis-modeller/Tests/004"
 MODEL_PATH = f"{BASE_FOLDER}/model.glb"
 IMAGE_PATH = f"{BASE_FOLDER}/render_inpainted.png"
 REGION_PATH = f"{BASE_FOLDER}/infill.glb"

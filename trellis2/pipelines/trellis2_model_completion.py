@@ -13,13 +13,14 @@ from . import samplers, rembg
 from ..modules.sparse import SparseTensor
 from ..modules import image_feature_extractor
 from ..representations import Mesh, MeshWithVoxel, Voxel
-from ..utils.mesh_utils import get_scene_geometry
+from ..utils.mesh_utils import get_scene_geometry, scale_to_box
 from ..utils.vox_utils import (
     voxidx2vol,
     vox2mesh,
     mesh_to_voxel_volume,
     resample_volume,
     box_filter,
+    gaussian_blur_3d,
 )
 from ..utils.render_utils import render_frames, yaw_pitch_r_fov_to_extrinsics_intrinsics
 
@@ -273,13 +274,36 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         enc_region = F.interpolate(
             region, (16, 16, 16), mode="trilinear", align_corners=False
         )
-        noise = self.sparse_structure_sampler.prepare_inpainting(enc_target, enc_region)
+        enc_occupancy = (
+            F.interpolate(
+                target[None, None].float(),
+                (16, 16, 16),
+                mode="trilinear",
+                align_corners=False,
+            )
+            > 0.5
+        )
+        # enc_mask = (enc_occupancy & ~enc_region).float()
+        noise = self.sparse_structure_sampler.prepare_inpainting(
+            enc_target, enc_region, start_step=0
+        )
+        self.sparse_structure_sampler.add_callback(
+            lambda x: 0.9 * x + 0.4 * gaussian_blur_3d(x, 1, 3)
+        )
         # Sample sparse structure latent
         # SparseStructureFlowModel
         with self.get_model("sparse_structure_flow_model") as ss_flow:
             reso = ss_flow.resolution
             in_channels = ss_flow.in_channels
             sampler_params = {**self.sparse_structure_sampler_params, **sampler_params}
+            # noise = self.sparse_structure_sampler.optimize_noise(
+            #     ss_flow,
+            #     noise,
+            #     **cond,
+            #     **sampler_params,
+            #     verbose=True,
+            #     tqdm_desc="Inverting SS target",
+            # )
             # FlowEulerGuidanceIntervalSample
             z_s = self.sparse_structure_sampler.sample(
                 ss_flow,
@@ -305,11 +329,6 @@ class Trellis2ModelCompletionPipeline(Pipeline):
                 torch.nn.functional.max_pool3d(decoded.float(), ratio, ratio, 0) > 0.5
             ).bool()  # Essentially just downsampling from 1, 1, 64... to 1, 1, 32... when needed for the next model
         return decoded
-        coords = torch.argwhere(decoded)[
-            :, [0, 2, 3, 4]
-        ].int()  # Just extracts voxel coords, ignores second dim (always 1, channel dim)
-
-        return coords  # [sum(decoded), 4]
 
     def sample_shape_slat(
         self,
@@ -335,10 +354,18 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         )
         target = (target - mean) / std
         noise = self.shape_slat_sampler.prepare_inpainting(
-            target, region, template=ss_coords
+            target, region, template=ss_coords, hard=True, start_step=0
         )
-        # self.shape_slat_sampler.set_target(None, None)
         sampler_params = {**self.shape_slat_sampler_params, **sampler_params}
+        # noise = 0.75 * noise + 0.25 * self.shape_slat_sampler.optimize_noise(
+        #     flow_model,
+        #     noise,
+        #     **cond,
+        #     **sampler_params,
+        #     verbose=True,
+        #     n_loops=1,
+        #     tqdm_desc="Inverting shape SLat target",
+        # )
         if self.low_vram:
             flow_model.to(self.device)
         slat = self.shape_slat_sampler.sample(
@@ -390,7 +417,7 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         )
         target = (target - mean) / std
         noise = self.tex_slat_sampler.prepare_inpainting(
-            target, region, template=shape_slat.coords
+            target, region, template=shape_slat.coords, hard=False, start_step=0
         )
         # noise = SparseTensor(
         #     feats=torch.randn(
@@ -401,6 +428,18 @@ class Trellis2ModelCompletionPipeline(Pipeline):
 
         # self.tex_slat_sampler.set_target(None, None)
         sampler_params = {**self.tex_slat_sampler_params, **sampler_params}
+        # noise = 0.5 * (
+        #     noise
+        #     + self.tex_slat_sampler.optimize_noise(
+        #         flow_model,
+        #         noise,
+        #         concat_cond=shape_slat,
+        #         **cond,
+        #         **sampler_params,
+        #         verbose=True,
+        #         tqdm_desc="Inverting Tex SLat target",
+        #     )
+        # )
         if self.low_vram:
             flow_model.to(self.device)
         slat = self.tex_slat_sampler.sample(
@@ -518,6 +557,7 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         pipeline_type: Optional[str] = None,
         max_num_tokens: int = 49152,
     ) -> List[MeshWithVoxel]:
+        mesh, inpaint_region = scale_to_box([mesh, inpaint_region])
         # Check pipeline type
         pipeline_type = pipeline_type or self.default_pipeline_type
         o_vox_res = 512 if "512" in pipeline_type else 1024
@@ -525,10 +565,12 @@ class Trellis2ModelCompletionPipeline(Pipeline):
             pipeline_type
         ]
 
-        ss_inpaint = mesh_to_voxel_volume(inpaint_region, ss_res).to(self.device)
-        # ss_inpaint = box_filter(
-        #     torch.nn.functional.max_pool3d(ss_inpaint.float(), 3, 1, 1), 5
-        # )
+        ss_inpaint = (
+            mesh_to_voxel_volume(inpaint_region, ss_res).to(self.device).float()
+        )
+        ss_inpaint_soft = box_filter(
+            torch.nn.functional.max_pool3d(ss_inpaint, 3, 1, 1), 5
+        )
         # Preprocess image
         image = self.preprocess_image(image)
 
@@ -593,20 +635,21 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         cond = self.get_cond(image=[image], resolution=o_vox_res)
 
         # Get new sparse structure
-        ss = self.sample_sparse_structure(ss_target, ss_inpaint, cond, ss_res)
+        ss = self.sample_sparse_structure(ss_target, ss_inpaint_soft, cond, ss_res)
+        # ss = (ss_inpaint + ss_target) > 0.5
         vox2mesh(ss.squeeze(1), save_path="latest_ss.glb")
         # ss_coords = torch.argwhere(ss.squeeze(1)).int()
         ss_coords = ss.squeeze(1).nonzero()
         # Get flow model names
         shape_flow_name, tex_flow_name = self.get_slat_models(pipeline_type)
 
-        sparse_region = SparseTensor(
-            feats=ss_inpaint[ss_inpaint > 0],
+        sparse_region_soft = SparseTensor(
+            feats=ss_inpaint_soft[ss_inpaint_soft > 0],
             coords=ss_inpaint.squeeze(1).nonzero(),
         )
         sparse_region_hard = SparseTensor(
-            feats=torch.ones_like(sparse_region.feats),
-            coords=sparse_region.coords,
+            feats=ss_inpaint[ss_inpaint > 0],
+            coords=sparse_region_soft.coords,
         )
 
         # Sample constrained shape slat
@@ -614,7 +657,7 @@ class Trellis2ModelCompletionPipeline(Pipeline):
             shape_slat = self.sample_shape_slat(
                 ss_coords,
                 shape_slat_target,
-                sparse_region,
+                sparse_region_soft,
                 cond,
                 shape_flow,
                 ss_coords,
@@ -628,7 +671,7 @@ class Trellis2ModelCompletionPipeline(Pipeline):
             tex_slat = self.sample_tex_slat(
                 ss_coords,
                 tex_slat_target,
-                sparse_region,
+                sparse_region_soft,
                 cond,
                 tex_flow,
                 shape_slat,
