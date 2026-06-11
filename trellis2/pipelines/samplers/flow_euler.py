@@ -7,6 +7,7 @@ from .base import Sampler
 from .classifier_free_guidance_mixin import ClassifierFreeGuidanceSamplerMixin
 from .guidance_interval_mixin import GuidanceIntervalSamplerMixin
 from .inpaint_mixin import InpaintSamplerMixin
+from .inspection_mixin import InspectionMixin
 
 
 class FlowEulerSampler(Sampler):
@@ -184,7 +185,9 @@ class FlowEulerCfgSampler(ClassifierFreeGuidanceSamplerMixin, FlowEulerSampler):
 
 
 class FlowEulerGuidanceIntervalSampler(
-    GuidanceIntervalSamplerMixin, ClassifierFreeGuidanceSamplerMixin, FlowEulerSampler
+    GuidanceIntervalSamplerMixin,
+    ClassifierFreeGuidanceSamplerMixin,
+    FlowEulerSampler,
 ):
     """
     Generate samples from a flow-matching model using Euler sampling with classifier-free guidance and interval.
@@ -240,6 +243,125 @@ class FlowEulerGuidanceIntervalSampler(
 
 
 class FlowEulerGuidanceIntervalCompletionSampler(
+    InpaintSamplerMixin,
+    GuidanceIntervalSamplerMixin,
+    ClassifierFreeGuidanceSamplerMixin,
+    FlowEulerSampler,
+):
+    """
+    Generate samples from a flow-matching model using Euler sampling with classifier-free guidance and interval.
+    """
+
+    @torch.no_grad()
+    def sample(
+        self,
+        model,
+        noise,
+        cond,
+        neg_cond,
+        steps: int = 50,
+        rescale_t: float = 1.0,
+        guidance_strength: float = 3.0,
+        guidance_interval: Tuple[float, float] = (0.0, 1.0),
+        verbose: bool = True,
+        **kwargs
+    ):
+        """
+        Generate samples from the model using Euler method.
+
+        Args:
+            model: The model to sample from.
+            noise: The initial noise tensor.
+            cond: conditional information.
+            neg_cond: negative conditional information.
+            steps: The number of steps to sample.
+            rescale_t: The rescale factor for t.
+            guidance_strength: The strength of classifier-free guidance.
+            guidance_interval: The interval for classifier-free guidance.
+            verbose: If True, show a progress bar.
+            **kwargs: Additional arguments for model_inference.
+
+        Returns:
+            a dict containing the following
+            - 'samples': the model samples.
+            - 'pred_x_t': a list of prediction of x_t.
+            - 'pred_x_0': a list of prediction of x_0.
+        """
+        return super().sample(
+            model,
+            noise,
+            cond,
+            steps,
+            rescale_t,
+            verbose,
+            neg_cond=neg_cond,
+            guidance_strength=guidance_strength,
+            guidance_interval=guidance_interval,
+            **kwargs
+        )
+
+
+class InspectedFlowEulerGuidanceIntervalSampler(
+    InspectionMixin,
+    GuidanceIntervalSamplerMixin,
+    ClassifierFreeGuidanceSamplerMixin,
+    FlowEulerSampler,
+):
+    """
+    Generate samples from a flow-matching model using Euler sampling with classifier-free guidance and interval.
+    """
+
+    @torch.no_grad()
+    def sample(
+        self,
+        model,
+        noise,
+        cond,
+        neg_cond,
+        steps: int = 50,
+        rescale_t: float = 1.0,
+        guidance_strength: float = 3.0,
+        guidance_interval: Tuple[float, float] = (0.0, 1.0),
+        verbose: bool = True,
+        **kwargs
+    ):
+        """
+        Generate samples from the model using Euler method.
+
+        Args:
+            model: The model to sample from.
+            noise: The initial noise tensor.
+            cond: conditional information.
+            neg_cond: negative conditional information.
+            steps: The number of steps to sample.
+            rescale_t: The rescale factor for t.
+            guidance_strength: The strength of classifier-free guidance.
+            guidance_interval: The interval for classifier-free guidance.
+            verbose: If True, show a progress bar.
+            **kwargs: Additional arguments for model_inference.
+
+        Returns:
+            a dict containing the following
+            - 'samples': the model samples.
+            - 'pred_x_t': a list of prediction of x_t.
+            - 'pred_x_0': a list of prediction of x_0.
+        """
+        return super().sample(
+            model,
+            noise,
+            cond,
+            steps,
+            rescale_t,
+            verbose,
+            neg_cond=neg_cond,
+            guidance_strength=guidance_strength,
+            guidance_interval=guidance_interval,
+            **kwargs
+        )
+
+
+class InspectedFlowEulerGuidanceIntervalCompletionSampler(
+    InspectionMixin,
     InpaintSamplerMixin,
     GuidanceIntervalSamplerMixin,
     ClassifierFreeGuidanceSamplerMixin,

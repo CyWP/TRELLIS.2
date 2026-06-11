@@ -4,4 +4,6 @@ from .flow_euler import (
     FlowEulerCfgSampler,
     FlowEulerGuidanceIntervalSampler,
     FlowEulerGuidanceIntervalCompletionSampler,
+    InspectedFlowEulerGuidanceIntervalSampler,
+    InspectedFlowEulerGuidanceIntervalCompletionSampler,
 )

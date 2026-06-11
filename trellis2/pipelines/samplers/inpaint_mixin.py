@@ -24,10 +24,6 @@ class InpaintSamplerMixin:
         constrained region
     """
 
-    # ============================================================
-    # Sampling loop
-    # ============================================================
-
     @torch.no_grad()
     def sample(
         self,
@@ -87,31 +83,14 @@ class InpaintSamplerMixin:
 
         return ret
 
-    # ============================================================
-    # Coordinate hashing
-    # ============================================================
-
-    def _sparse_coord_hash(
-        self,
-        coords: Tensor,
-    ) -> Tensor:
-
+    def _sparse_coord_hash(self, coords: Tensor, base: int = 4096) -> Tensor:
         coords = coords.long()
-
-        # robust enough for 64^3 / 128^3 sparse coords
-        base = 4096
-
         strides = base ** torch.arange(
             coords.shape[1],
             device=coords.device,
             dtype=torch.long,
         )
-
         return (coords * strides[None]).sum(dim=1)
-
-    # ============================================================
-    # Prepare inpainting
-    # ============================================================
 
     def prepare_inpainting(
         self,
@@ -290,10 +269,6 @@ class InpaintSamplerMixin:
         region = cache["region"]
 
         return region * x + (1 - region) * constrained_xt
-
-        mask = cache["mask"].to(x.dtype)
-
-        return (1 - mask) * x + mask * constrained_xt
 
     # ============================================================
     # Generic projection

@@ -10,7 +10,7 @@ import o_voxel
 import time
 import shutil
 
-BASE_FOLDER = "/home/cyvv/share/Research/trellis-modeller/Tests/004"
+BASE_FOLDER = "/home/cyvv/share/Research/trellis-modeller/Tests/003"
 MODEL_PATH = f"{BASE_FOLDER}/model.glb"
 IMAGE_PATH = f"{BASE_FOLDER}/render_inpainted.png"
 REGION_PATH = f"{BASE_FOLDER}/infill.glb"
@@ -26,6 +26,7 @@ base = trimesh.load(MODEL_PATH)
 inpaint_region = trimesh.load(REGION_PATH)
 image = Image.open(IMAGE_PATH)
 mesh = pipeline.run(base, image, inpaint_region)[0]
+mesh.simplify(16777216)  # nvdiffrast limit
 
 glb = o_voxel.postprocess.to_glb(
     vertices=mesh.vertices,
@@ -36,7 +37,7 @@ glb = o_voxel.postprocess.to_glb(
     voxel_size=mesh.voxel_size,
     aabb=[[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
     decimation_target=1000000,
-    texture_size=4096,
+    texture_size=2048,
     remesh=True,
     remesh_band=1,
     remesh_project=0,

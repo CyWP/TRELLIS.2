@@ -22,6 +22,7 @@ from ..utils.vox_utils import (
     box_filter,
     gaussian_blur_3d,
 )
+from ..utils.conv_utils import GaussianFilter3D
 from ..utils.render_utils import render_frames, yaw_pitch_r_fov_to_extrinsics_intrinsics
 
 
@@ -288,7 +289,7 @@ class Trellis2ModelCompletionPipeline(Pipeline):
             enc_target, enc_region, start_step=0
         )
         self.sparse_structure_sampler.add_callback(
-            lambda x: 0.9 * x + 0.4 * gaussian_blur_3d(x, 1, 3)
+            lambda x: 0.8 * x + 0.2 * self.ss_blur_filter(x)
         )
         # Sample sparse structure latent
         # SparseStructureFlowModel
@@ -356,16 +357,19 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         noise = self.shape_slat_sampler.prepare_inpainting(
             target, region, template=ss_coords, hard=True, start_step=0
         )
-        sampler_params = {**self.shape_slat_sampler_params, **sampler_params}
-        # noise = 0.75 * noise + 0.25 * self.shape_slat_sampler.optimize_noise(
-        #     flow_model,
-        #     noise,
-        #     **cond,
-        #     **sampler_params,
-        #     verbose=True,
-        #     n_loops=1,
-        #     tqdm_desc="Inverting shape SLat target",
+        # self.shape_slat_sampler.add_callback(
+        #     lambda x: 0.8 * x + 0.2 * self.ss_blur_filter(x)
         # )
+        sampler_params = {**self.shape_slat_sampler_params, **sampler_params}
+        noise = 0.2 * noise + 0.8 * self.shape_slat_sampler.optimize_noise(
+            flow_model,
+            noise,
+            **cond,
+            **sampler_params,
+            verbose=True,
+            n_loops=3,
+            tqdm_desc="Inverting shape SLat target",
+        )
         if self.low_vram:
             flow_model.to(self.device)
         slat = self.shape_slat_sampler.sample(
@@ -428,18 +432,19 @@ class Trellis2ModelCompletionPipeline(Pipeline):
 
         # self.tex_slat_sampler.set_target(None, None)
         sampler_params = {**self.tex_slat_sampler_params, **sampler_params}
-        # noise = 0.5 * (
-        #     noise
-        #     + self.tex_slat_sampler.optimize_noise(
-        #         flow_model,
-        #         noise,
-        #         concat_cond=shape_slat,
-        #         **cond,
-        #         **sampler_params,
-        #         verbose=True,
-        #         tqdm_desc="Inverting Tex SLat target",
-        #     )
-        # )
+        noise = 0.5 * (
+            noise
+            + 0.5
+            * self.tex_slat_sampler.optimize_noise(
+                flow_model,
+                noise,
+                concat_cond=shape_slat,
+                **cond,
+                **sampler_params,
+                verbose=True,
+                tqdm_desc="Inverting Tex SLat target",
+            )
+        )
         if self.low_vram:
             flow_model.to(self.device)
         slat = self.tex_slat_sampler.sample(
@@ -570,6 +575,12 @@ class Trellis2ModelCompletionPipeline(Pipeline):
         )
         ss_inpaint_soft = box_filter(
             torch.nn.functional.max_pool3d(ss_inpaint, 3, 1, 1), 5
+        )
+        self.ss_blur_filter = GaussianFilter3D(
+            3, self.device, channels=8, sigma=1, layout="dense"
+        )
+        self.slat_blur_filter = GaussianFilter3D(
+            3, self.device, channels=32, sigma=1, layout="sparse"
         )
         # Preprocess image
         image = self.preprocess_image(image)
